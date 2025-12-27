@@ -1,0 +1,168 @@
+/*
+ * Vencord, a Discord client mod
+ * Copyright (c) 2025 Vendicated and contributors
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
+import { isPluginEnabled } from "@api/PluginManager";
+import { definePluginSettings } from "@api/Settings";
+import customRPC from "@plugins/customRPC";
+import { Devs, EquicordDevs, GUILD_ID, SUPPORT_CHANNEL_ID, SUPPORT_CHANNEL_IDS, VC_SUPPORT_CHANNEL_IDS } from "@utils/constants";
+import { isAnyPluginDev } from "@utils/misc";
+import definePlugin, { OptionType } from "@utils/types";
+import { Alerts, NavigationRouter, UserStore } from "@webpack/common";
+
+import { PluginButtons } from "./pluginButtons";
+import { PluginCards } from "./pluginCards";
+
+let clicked = false;
+
+const settings = definePluginSettings({
+    disableDMContextMenu: {
+        type: OptionType.BOOLEAN,
+        description: "Disables the DM list context menu in favor of the x button",
+        restartNeeded: true,
+        default: false
+    },
+    noMirroredCamera: {
+        type: OptionType.BOOLEAN,
+        description: "Prevents the camera from being mirrored on your screen",
+        restartNeeded: true,
+        default: false,
+    },
+    removeActivitySection: {
+        type: OptionType.BOOLEAN,
+        description: "Removes the activity section above member list",
+        restartNeeded: true,
+        default: false,
+    },
+    showYourOwnActivityButtons: {
+        type: OptionType.BOOLEAN,
+        description: "Discord hides your own activity buttons for some reason",
+        restartNeeded: true,
+        default: false,
+    }
+});
+
+export default definePlugin({
+    name: "EquicordHelper",
+    description: "Used to provide support, fix discord caused crashes, and other misc features.",
+    authors: [Devs.thororen, EquicordDevs.nyx, EquicordDevs.Naibuu],
+    required: true,
+    settings,
+    patches: [
+        // Fixes Unknown Resolution/FPS Crashing
+        {
+            find: "Unknown resolution:",
+            replacement: [
+                {
+                    match: /throw Error\("Unknown resolution: ".concat\((\i)\)\)/,
+                    replace: "return $1;"
+                },
+                {
+                    match: /throw Error\("Unknown frame rate: ".concat\((\i)\)\)/,
+                    replace: "return $1;"
+                }
+            ]
+        },
+        // Remove DM Context Menu
+        {
+            find: "#{intl::DM_OPTIONS}",
+            predicate: () => settings.store.disableDMContextMenu,
+
+            replacement: {
+                match: /\{dotsInsteadOfCloseButton:(\i),rearrangeContextMenu:(\i).*?autoTrackExposure:!0\}\)/,
+                replace: "$1=false,$2=false"
+            },
+        },
+        // When focused on voice channel or group chat voice call
+        {
+            find: /\i\?\i.\i.SELF_VIDEO/,
+            predicate: () => settings.store.noMirroredCamera,
+            replacement: {
+                match: /mirror:\i/,
+                replace: "mirror:!1"
+            },
+        },
+        // Popout camera when not focused on voice channel
+        {
+            find: ".mirror]:",
+            all: true,
+            predicate: () => settings.store.noMirroredCamera,
+            replacement: {
+                match: /\[(\i).mirror]:\i/,
+                replace: "[$1.mirror]:!1"
+            },
+        },
+        // Overriding css on Preview Camera/Change Video Background popup
+        {
+            find: ".cameraPreview,",
+            replacement: {
+                match: /className:\i.camera,/,
+                replace: "$&style:{transform: \"scalex(1)\"},"
+            },
+            predicate: () => settings.store.noMirroredCamera
+        },
+        // Remove Activity Section above Member List
+        {
+            find: ".MEMBERLIST_CONTENT_FEED_TOGGLED,",
+            predicate: () => settings.store.removeActivitySection,
+            replacement: {
+                match: /null==\i\|\|/,
+                replace: "true||$&"
+            },
+        },
+        {
+            find: ".buttons.length)>=1",
+            predicate: () => settings.store.showYourOwnActivityButtons && !isPluginEnabled(customRPC.name),
+            replacement: {
+                match: /.getId\(\)===\i.id/,
+                replace: "$& && false"
+            }
+        },
+        // Always show open legacy settings
+        ...[
+            ".DEVELOPER_SECTION,",
+            '"LegacySettingsSidebarItem"'
+        ].map(find => ({
+            find,
+            replacement: [
+                {
+                    match: /\i\.\i\.isDeveloper/,
+                    replace: "true"
+                },
+            ]
+        })),
+    ],
+    renderMessageAccessory(props) {
+        return (
+            <>
+                <PluginButtons message={props.message} />
+                <PluginCards message={props.message} />
+            </>
+        );
+    },
+    flux: {
+        async CHANNEL_SELECT({ channelId }) {
+            const isSupportChannel = SUPPORT_CHANNEL_IDS.includes(channelId);
+            if (!isSupportChannel) return;
+
+            const selfId = UserStore.getCurrentUser()?.id;
+            if (!selfId || isAnyPluginDev(selfId)) return;
+            if (VC_SUPPORT_CHANNEL_IDS.includes(channelId) && !clicked) {
+                return Alerts.show({
+                    title: "Vencord Support Channel Warning",
+                    body: "Before asking for help. Check updates and if this issue is actually caused by Equicord!",
+                    confirmText: "Equicord Support",
+                    onConfirm() {
+                        NavigationRouter.transitionTo(`/channels/${GUILD_ID}/${SUPPORT_CHANNEL_ID}`);
+                    },
+                    cancelText: "Okay continue",
+                    onCancel() {
+                        clicked = true;
+                    },
+                });
+            }
+        },
+    }
+});
